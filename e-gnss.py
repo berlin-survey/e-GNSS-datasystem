@@ -543,6 +543,22 @@ with col_right:
             st.download_button("📍 下載 報表2.坐標成果表", f2, "報表2.xlsx", use_container_width=True)
 
     st.markdown("---"); st.header("🏁 第七區：六參數轉換 (強制附合)")
+    # 在上傳組件下方加入範例下載按鈕
+    sample_kp = pd.DataFrame({
+        '測點名稱': ['R266', 'R291', 'SW52', 'SW61'],
+        'N': [2545455.695, 2537041.401, 2536216.438, 2538963.044],
+        'E': [179627.685, 177281.763, 191536.663, 195893.554]
+    })
+    f_kp_sample = io.BytesIO()
+    with pd.ExcelWriter(f_kp_sample, engine='openpyxl') as writer:
+        sample_kp.to_excel(writer, index=False)
+    f_kp_sample.seek(0)
+    st.download_button(
+    label="📥 下載 已知點清冊範例檔.xlsx", 
+    data=f_kp_sample, 
+    file_name="已知點清冊範例.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
     kp_file = st.file_uploader("📂 上傳 已知控制點清冊", type=['csv', 'xlsx'], key="kp_u")
     if kp_file and st.session_state.temp_database:
         try:
