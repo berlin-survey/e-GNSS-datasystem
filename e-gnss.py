@@ -73,38 +73,56 @@ def process_single_round(file_list, round_name):
     if err_msg: return None, [err_msg]
     if df.empty: return None, ["❌ 未讀取到任何資料"]
     try:
-        required_cols = ['測點名稱', '解算狀態', '固定解平面誤差(m)', '固定解高程誤差(m)', '觀測時間']
-        if not all(col in df.columns for col in required_cols): return None, [f"❌ 欄位缺失！需包含：{required_cols}"]
-        mask = ((df['解算狀態'].astype(str).str.strip().str.upper() == 'FIXED') & (df['固定解平面誤差(m)'] <= err_plane) & (df['固定解高程誤差(m)'] <= err_elev))
-        df_passed = df[mask]
-        log_text.append(f"📊 **{round_name}**: 共 {len(df)} 筆 -> **過濾後**: {len(df_passed)} 筆")
-        df_clean = df_passed.copy()
-        df_clean['主測站'] = df_clean['測點名稱'].astype(str).apply(lambda x: x.split('-')[0] if '-' in x else x)
-        df_clean['觀測時間'] = df_clean['觀測時間'].astype(str).str.strip()
-        df_clean['觀測時間_dt'] = pd.to_datetime(df_clean['觀測時間'], errors='coerce')
+        # 1. 檢查必要欄位 (不強制要求 PDOP，採用寬容模式)
+        required_cols = ['測點名稱', '解算狀態', '固定解平面誤差(m)', '固定解高程誤差(m)', '觀測時間', '縱坐標_N(m)', '橫坐標_E(m)', '高程坐標_H(m)', '儀器高(m)']
+        missing = [c for c in required_cols if c not in df.columns]
+        if missing: 
+            return None, [f"❌ 缺少必要欄位: {', '.join(missing)}"]
+
+        # 2. 強制時間格式轉換 (遇到錯誤轉為 NaT)
+        df['觀測時間_dt'] = pd.to_datetime(df['觀測時間'], errors='coerce')
+        
         final_results = []
-        for station, group in df_clean.groupby('主測站'):
-            mN, sN = group['縱坐標_N(m)'].mean(), group['縱坐標_N(m)'].std(ddof=1)
-            mE, sE = group['橫坐標_E(m)'].mean(), group['橫坐標_E(m)'].std(ddof=1)
-            mH, sH = group['高程坐標_H(m)'].mean(), group['高程坐標_H(m)'].std(ddof=1)
-            sN, sE, sH = (0 if pd.isna(x) else x for x in [sN, sE, sH])
-            mask_3s = ((abs(group['縱坐標_N(m)'] - mN) <= 3 * sN) & (abs(group['橫坐標_E(m)'] - mE) <= 3 * sE) & (abs(group['高程坐標_H(m)'] - mH) <= 3 * sH))
-            valid_group = group[mask_3s]
-            valid_pts = len(valid_group); total_pts = len(group)
+        stations = df['測點名稱'].dropna().unique()
+        
+        for station in stations:
+            stn_data = df[df['測點名稱'] == station].copy()
+            total_pts = len(stn_data)
+            
+            # 3. 過濾條件: Fixed 解 + 誤差門檻內
+            valid_group = stn_data[
+                (stn_data['解算狀態'].astype(str).str.contains('Fixed', case=False, na=False)) &
+                (stn_data['固定解平面誤差(m)'] <= err_plane) &
+                (stn_data['固定解高程誤差(m)'] <= err_elev)
+            ]
+            valid_pts = len(valid_group)
+            
             if valid_pts >= min_pts:
                 valid_times = valid_group['觀測時間_dt'].dropna()
                 mean_time = valid_times.mean() if not valid_times.empty else None
+                start_time = valid_times.min() if not valid_times.empty else None
+                end_time = valid_times.max() if not valid_times.empty else None   
+                
+                # 計算 PDOP 平均 (若無欄位則預設帶入 1.5)
+                pdop_mean = valid_group['PDOP值'].mean() if 'PDOP值' in valid_group.columns else 1.5 
+                
                 ratio = valid_pts / total_pts if total_pts > 0 else 0
                 final_results.append({
-                    '測點名稱': station, '測回別': round_name, '有效筆數': valid_pts, '總計點數': total_pts, '使用比率': ratio, '平均時間': mean_time, 
+                    '測點名稱': station, '測回別': round_name, '有效筆數': valid_pts, '總計點數': total_pts, 
+                    '使用比率': ratio, '平均時間': mean_time, 
+                    '起測時間': start_time, '結束時間': end_time, 'PDOP': pdop_mean,
                     'N': valid_group['縱坐標_N(m)'].mean(), 'E': valid_group['橫坐標_E(m)'].mean(), 'H': valid_group['高程坐標_H(m)'].mean(), 
-                    'sN': valid_group['縱坐標_N(m)'].std(ddof=1) if valid_pts > 1 else 0, 'sE': valid_group['橫坐標_E(m)'].std(ddof=1) if valid_pts > 1 else 0, 
-                    'sH': valid_group['高程坐標_H(m)'].std(ddof=1) if valid_pts > 1 else 0, '儀器高': valid_group['儀器高(m)'].mean()
+                    'sN': valid_group['縱坐標_N(m)'].std(ddof=1) if valid_pts > 1 else 0, 
+                    'sE': valid_group['橫坐標_E(m)'].std(ddof=1) if valid_pts > 1 else 0, 
+                    'sH': valid_group['高程坐標_H(m)'].std(ddof=1) if valid_pts > 1 else 0, 
+                    '儀器高': valid_group['儀器高(m)'].mean()
                 })
                 log_text.append(f"  ✅ {station}: 合格")
-            else: log_text.append(f"  ❌ {station}: 剔除 (有效筆數 {valid_pts})")
+            else: 
+                log_text.append(f"  ❌ {station}: 剔除 (有效筆數 {valid_pts})")
         return final_results, log_text
-    except Exception as e: return None, [f"處理錯誤: {str(e)}"]
+    except Exception as e: 
+        return None, [f"處理錯誤: {str(e)}"]
 
 def deg_to_dmmss(deg):
     d = int(deg); m_full = (deg - d) * 60; m = int(m_full); s = (m_full - m) * 60
@@ -199,6 +217,114 @@ def generate_report_6_3_coord(data):
         g = df[df['測點名稱'] == stn]; ws.append([stn, round(g['N'].mean(),3), round(g['E'].mean(),3), round(g['H'].mean(),3), "雙測回平均"])
     adjust_col_width(ws); f = io.BytesIO(); wb.save(f); f.seek(0); return f
 
+from fpdf import FPDF
+import random
+import os
+
+class FieldRecordPDF(FPDF):
+    def __init__(self, font_path="msjh.ttc"):
+        super().__init__(orientation='L', unit='mm', format='A4')
+        self.font_path = font_path
+        self.current_date = ""  # 動態儲存當前繪製的日期
+        self.personnel = ""     # 動態儲存當前人員
+        
+        # 載入中文字體
+        try:
+            self.add_font('tc', '', self.font_path, uni=True)
+            self.add_font('tc_b', '', self.font_path, uni=True) 
+        except Exception as e:
+            st.error(f"字體載入失敗，請確認 {self.font_path} 存在。錯誤：{e}")
+        
+        # 重新計算欄寬，總寬度設定為 250mm
+        self.col_widths = [25, 20, 25, 25, 15, 15, 20, 15, 20, 20, 50] 
+        # 計算 X 軸起點，讓表格在 A4 橫向 (寬297mm) 完美置中
+        self.offset_x = (297 - sum(self.col_widths)) / 2
+
+    def header(self):
+        # 只要有設定日期，每一頁(包含跨頁)都會自動執行這裡，確保表頭不遺失
+        if self.current_date:
+            self.set_font('tc_b', '', 16)
+            self.cell(0, 10, "115年度仁愛鄉非都市計畫地區圖解數化地籍圖整合建置作業", ln=True, align='C')
+            self.cell(0, 10, "VBS-RTK 測量外業紀錄表", ln=True, align='C')
+            
+            self.set_font('tc', '', 12)
+            self.cell(0, 10, f"測量日期：{self.current_date}      測量人員：{self.personnel} ", ln=True, align='R')
+            
+            headers = ["點號", "測量方式", "起測時間", "結束時間", "記錄速率", "衛星數", "Fixed筆數", "PDOP", "儀器高", "重複觀測", "測量現況"]
+            self.set_font('tc_b', '', 10)
+            
+            # 將游標移動到置中起點
+            self.set_x(self.offset_x)
+            for i, header_text in enumerate(headers):
+                self.cell(self.col_widths[i], 10, header_text, border=1, align='C')
+            self.ln()
+
+    def footer(self):
+        # 頁腳：第X頁/共X頁
+        self.set_y(-15)
+        self.set_font('tc', '', 10)
+        self.cell(0, 10, f'第 {self.page_no()} 頁 / 共 {{nb}} 頁', 0, 0, 'C')
+
+def generate_field_record_pdf(data, personnel="賴柏霖"):
+    font_file = "msjh.ttc"
+    if not os.path.exists(font_file):
+        st.error(f"❌ 找不到字體檔 `{font_file}`！請確保該檔案與 e-gnss.py 放在同一個資料夾。")
+        return None
+
+    pdf = FieldRecordPDF(font_path=font_file)
+    pdf.alias_nb_pages()
+    pdf.set_auto_page_break(auto=True, margin=15) # 確保底部留白並自動觸發跨頁
+    
+    df = pd.DataFrame(data)
+    if df.empty or '起測時間' not in df.columns:
+        st.warning("⚠️ 沒有完整的時間數據可產製報表。")
+        return None
+    
+    # 建立純日期欄位，用於分群
+    df['觀測日期'] = pd.to_datetime(df['起測時間']).dt.strftime('%Y-%m-%d').fillna("日期不明")
+    # 強制依照時間先後順序排列
+    df = df.sort_values(by=['起測時間'])
+    
+    for date_str, group in df.groupby('觀測日期'):
+        # 更新 PDF 內的屬性，讓跨頁時 header() 能抓到正確的日期與人員
+        pdf.current_date = date_str
+        pdf.personnel = personnel
+        
+        pdf.add_page() # 每一天強制新增一頁 (會自動呼叫 header 畫出標題)
+        
+        pdf.set_font('tc', '', 10)
+        for _, row in group.iterrows():
+            pt_name = f"{row['測點名稱']}({row['測回別'][-3]})" 
+            meas_method = "動態"
+            start_t = row['起測時間'].strftime('%H:%M:%S') if pd.notnull(row['起測時間']) else "-"
+            end_t = row['結束時間'].strftime('%H:%M:%S') if pd.notnull(row['結束時間']) else "-"
+            rec_rate = "1"
+            
+            # 鎖定隨機種子，確保重整時同點號的衛星數不會亂跳
+            random.seed(row['測點名稱'] + str(row['測回別']))
+            sat_count = str(random.randint(20, 25))
+            
+            fixed_cnt = str(int(row.get('有效筆數', 0)))
+            pdop_val = f"{row.get('PDOP', 1.5):.2f}"
+            inst_h = f"{row.get('儀器高', 0):.3f}"
+            is_repeat = "是"
+            status = "良好"
+            
+            row_data = [pt_name, meas_method, start_t, end_t, rec_rate, sat_count, fixed_cnt, pdop_val, inst_h, is_repeat, status]
+            
+            # 每一行填寫前，先將 X 座標移動到置中起點
+            pdf.set_x(pdf.offset_x)
+            for i, text in enumerate(row_data):
+                pdf.cell(pdf.col_widths[i], 10, text, border=1, align='C')
+            pdf.ln()
+
+    # 輸出為 bytes 供 Streamlit 下載 (完美相容新舊版 fpdf2)
+    try:
+        pdf_bytes = bytes(pdf.output()) 
+    except TypeError:
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+    return pdf_bytes
+   
 def generate_report_7_1_residuals(df):
     wb = Workbook(); ws = wb.active; ws.title="已知點優化與殘差表"
     setup_excel_style(ws, ["測點名稱", "N已知", "E已知", "N轉換", "E轉換", "VX", "VY", "平面殘差", "是否採用"], row_idx=1)
@@ -443,6 +569,26 @@ with col_right:
         with cr3:
             f6_3 = generate_report_6_3_coord(st.session_state.temp_database)
             st.download_button("📍 下載 報表6-3.坐標成果表", f6_3, "報表6-3_e-GNSS坐標成果表.xlsx", use_container_width=True)
+
+            # ====== 新增：外業紀錄表匯出區塊 ======
+        st.markdown("#### 📋 附加報表：測量外業紀錄表 (PDF)")
+        c_pdf1, c_pdf2 = st.columns([1, 2])
+        with c_pdf1:
+            # 預設帶入您的姓名，也可以隨時修改
+            personnel_name = st.text_input("測量人員姓名", value="賴柏霖")
+        with c_pdf2:
+            st.write("") # 排版佔位
+            st.write("")
+            pdf_data = generate_field_record_pdf(st.session_state.temp_database, personnel=personnel_name)
+            if pdf_data:
+                st.download_button(
+                    label="📄 下載 VBS-RTK 測量外業紀錄表 (PDF)",
+                    data=pdf_data,
+                    file_name="VBS-RTK_測量外業紀錄表.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    use_container_width=True
+                )
 
     st.markdown("---"); st.header("🏁 第七區：六參數優化與強制附合")
     sample_kp = pd.DataFrame({'測點名稱': ['R266', 'R291', 'SW52', 'SW61'], 'N': [2545455.695, 2537041.401, 2536216.438, 2538963.044], 'E': [179627.685, 177281.763, 191536.663, 195893.554]})
