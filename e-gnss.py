@@ -82,9 +82,13 @@ def process_single_round(file_list, round_name):
         # 2. 強制時間格式轉換 (遇到錯誤轉為 NaT)
         df['觀測時間_dt'] = pd.to_datetime(df['觀測時間'], errors='coerce')
         
+        # 👇 ================= 新增這行：自動修剪測點名稱的尾巴 ================= 👇
+        # 利用正規表達式，將結尾是「-數字」的部分自動刪除 (例如 BO001-1 變成 BO001)
+        df['測點名稱'] = df['測點名稱'].astype(str).str.replace(r'-\d+$', '', regex=True)
+        # 👆 ==================================================================== 👆
+        
         final_results = []
         stations = df['測點名稱'].dropna().unique()
-        
         for station in stations:
             stn_data = df[df['測點名稱'] == station].copy()
             total_pts = len(stn_data)
@@ -222,58 +226,58 @@ import random
 import os
 
 class FieldRecordPDF(FPDF):
-    def __init__(self, font_path="msjh.ttc"):
+    def __init__(self, font_path="msjh.ttc", project_name=""):
         super().__init__(orientation='L', unit='mm', format='A4')
         self.font_path = font_path
-        self.current_date = ""  # 動態儲存當前繪製的日期
-        self.personnel = ""     # 動態儲存當前人員
+        self.current_date = ""  
+        self.personnel = ""     
+        self.project_name = project_name # 動態儲存專案名稱
         
-        # 載入中文字體
         try:
             self.add_font('tc', '', self.font_path, uni=True)
             self.add_font('tc_b', '', self.font_path, uni=True) 
         except Exception as e:
             st.error(f"字體載入失敗，請確認 {self.font_path} 存在。錯誤：{e}")
         
-        # 重新計算欄寬，總寬度設定為 250mm
-        self.col_widths = [25, 20, 25, 25, 15, 15, 20, 15, 20, 20, 50] 
-        # 計算 X 軸起點，讓表格在 A4 橫向 (寬297mm) 完美置中
+        # 調整欄位寬度，加入「測回」的 18mm，並微調其他欄位，總寬度維持 250mm 完美置中
+        self.col_widths = [20, 18, 18, 22, 22, 16, 16, 20, 16, 20, 20, 42] 
         self.offset_x = (297 - sum(self.col_widths)) / 2
 
     def header(self):
-        # 只要有設定日期，每一頁(包含跨頁)都會自動執行這裡，確保表頭不遺失
         if self.current_date:
             self.set_font('tc_b', '', 16)
-            self.cell(0, 10, "115年度仁愛鄉非都市計畫地區圖解數化地籍圖整合建置作業", ln=True, align='C')
+            self.cell(0, 10, self.project_name, ln=True, align='C')
             self.cell(0, 10, "VBS-RTK 測量外業紀錄表", ln=True, align='C')
             
             self.set_font('tc', '', 12)
             self.cell(0, 10, f"測量日期：{self.current_date}      測量人員：{self.personnel} ", ln=True, align='R')
             
-            headers = ["點號", "測量方式", "起測時間", "結束時間", "記錄速率", "衛星數", "Fixed筆數", "PDOP", "儀器高", "重複觀測", "測量現況"]
+            # 這裡新增了「測回」表頭
+            headers = ["點號", "測回", "測量方式", "起測時間", "結束時間", "記錄速率", "衛星數", "Fixed筆數", "PDOP", "儀器高", "重複觀測", "測量現況"]
             self.set_font('tc_b', '', 10)
             
-            # 將游標移動到置中起點
             self.set_x(self.offset_x)
             for i, header_text in enumerate(headers):
                 self.cell(self.col_widths[i], 10, header_text, border=1, align='C')
             self.ln()
 
     def footer(self):
-        # 頁腳：第X頁/共X頁
         self.set_y(-15)
         self.set_font('tc', '', 10)
         self.cell(0, 10, f'第 {self.page_no()} 頁 / 共 {{nb}} 頁', 0, 0, 'C')
 
-def generate_field_record_pdf(data, personnel="賴柏霖"):
+def generate_field_record_pdf(data, personnel="賴柏霖", project_name=""):
     font_file = "msjh.ttc"
     if not os.path.exists(font_file):
         st.error(f"❌ 找不到字體檔 `{font_file}`！請確保該檔案與 e-gnss.py 放在同一個資料夾。")
         return None
 
-    pdf = FieldRecordPDF(font_path=font_file)
+    # 將 project_name 傳入 PDF 類別 (保留這組正確的)
+    pdf = FieldRecordPDF(font_path=font_file, project_name=project_name)
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=15) # 確保底部留白並自動觸發跨頁
+    
+    df = pd.DataFrame(data)
     
     df = pd.DataFrame(data)
     if df.empty or '起測時間' not in df.columns:
@@ -293,8 +297,10 @@ def generate_field_record_pdf(data, personnel="賴柏霖"):
         pdf.add_page() # 每一天強制新增一頁 (會自動呼叫 header 畫出標題)
         
         pdf.set_font('tc', '', 10)
+
         for _, row in group.iterrows():
-            pt_name = f"{row['測點名稱']}({row['測回別'][-3]})" 
+            pt_name = str(row['測點名稱'])
+            round_name = str(row.get('測回別', '')) # 📝 新增抓取測回別 (會顯示「第 1 測回」或「第 2 測回」)
             meas_method = "動態"
             start_t = row['起測時間'].strftime('%H:%M:%S') if pd.notnull(row['起測時間']) else "-"
             end_t = row['結束時間'].strftime('%H:%M:%S') if pd.notnull(row['結束時間']) else "-"
@@ -310,7 +316,8 @@ def generate_field_record_pdf(data, personnel="賴柏霖"):
             is_repeat = "是"
             status = "良好"
             
-            row_data = [pt_name, meas_method, start_t, end_t, rec_rate, sat_count, fixed_cnt, pdop_val, inst_h, is_repeat, status]
+            # 📝 將 round_name 加入 row_data 陣列中，對應第二欄
+            row_data = [pt_name, round_name, meas_method, start_t, end_t, rec_rate, sat_count, fixed_cnt, pdop_val, inst_h, is_repeat, status]
             
             # 每一行填寫前，先將 X 座標移動到置中起點
             pdf.set_x(pdf.offset_x)
@@ -415,6 +422,214 @@ def generate_report_7_3_final_coords(twd97_data, residuals_df):
         ws.append([r['測點名稱'], round(r['N_TWD97'], 3), round(r['E_TWD97'], 3), round(r['H'], 3), "圖根點"]); curr += 1
 
     adjust_col_width(ws); f = io.BytesIO(); wb.save(f); f.seek(0); return f
+
+def generate_report_8_1_nlsc_pdf(twd97_data, gnss_data, check_pts):
+    from fpdf import FPDF
+    import math
+    import itertools
+    import pandas as pd
+    import os
+    import streamlit as st
+    
+    font_file = "msjh.ttc"
+    if not os.path.exists(font_file):
+        st.error(f"❌ 找不到字體檔 `{font_file}`！請確保該檔案與 e-gnss.py 放在同一個資料夾。")
+        return None
+
+    pdf = FPDF(orientation='P', unit='mm', format='A4')
+    pdf.add_font('tc', '', font_file, uni=True)
+    pdf.set_auto_page_break(auto=True, margin=15)
+    
+    df_t = pd.DataFrame(twd97_data).set_index('測點名稱')
+    df_g = pd.DataFrame(gnss_data).groupby('測點名稱')[['N','E']].mean()
+    
+    def dec2dms(deg):
+        deg = deg % 360
+        d = int(deg)
+        rem = (deg - d) * 60
+        m = int(rem)
+        s = (rem - m) * 60
+        return f"{d:03d}-{m:02d}-{s:05.2f}"
+
+    # ==========================
+    # 1. 點位坐標檢測成果表
+    # ==========================
+    pdf.add_page()
+    pdf.set_font('tc', '', 16)
+    pdf.cell(0, 10, "☆ ☆ ☆  內政部國土測繪中心  ☆ ☆ ☆", ln=True, align='C')
+    pdf.set_font('tc', '', 14)
+    pdf.cell(0, 10, "點位坐標檢測成果報表", ln=True, align='C')
+    pdf.ln(5)
+    
+    pdf.set_font('tc', '', 9)
+    w1 = [20, 25, 25, 25, 25, 20, 20, 20] 
+    offset = (210 - sum(w1))/2
+    
+    pdf.set_x(offset)
+    pdf.cell(w1[0], 6, "", border=0, align='C')
+    pdf.cell(w1[1], 6, "檢測坐標", border=0, align='C')
+    pdf.cell(w1[2], 6, "檢測坐標", border=0, align='C')
+    pdf.cell(w1[3], 6, "原始坐標", border=0, align='C')
+    pdf.cell(w1[4], 6, "原始坐標", border=0, align='C')
+    pdf.cell(w1[5]+w1[6]+w1[7], 6, "較 差 (原-檢)", border=0, align='C')
+    pdf.ln()
+    
+    pdf.set_x(offset)
+    headers1 = ["點號", "N (m)", "E (m)", "N (m)", "E (m)", "dN(m)", "dE(m)", "差值"]
+    for i, h in enumerate(headers1):
+        pdf.cell(w1[i], 8, h, border='B', align='C')
+    pdf.ln()
+    
+    max_dn_abs, max_de_abs, max_ds = -1.0, -1.0, -1.0
+    max_dn_val, max_de_val, max_ds_val = 0.0, 0.0, 0.0
+    max_dn_p, max_de_p, max_ds_p = "", "", ""
+
+    for i, p in enumerate(check_pts):
+        n_orig, e_orig = df_t.loc[p, 'N_TWD97'], df_t.loc[p, 'E_TWD97']
+        n_chk, e_chk = df_g.loc[p, 'N'], df_g.loc[p, 'E']
+        dn = n_orig - n_chk
+        de = e_orig - e_chk
+        ds = math.sqrt(dn**2 + de**2)
+        
+        if abs(dn) > max_dn_abs:
+            max_dn_abs, max_dn_val, max_dn_p = abs(dn), dn, p
+        if abs(de) > max_de_abs:
+            max_de_abs, max_de_val, max_de_p = abs(de), de, p
+        if ds > max_ds:
+            max_ds, max_ds_val, max_ds_p = ds, ds, p
+        
+        pdf.set_x(offset)
+        pdf.cell(w1[0], 8, f"{i+1}   {p}", align='C')
+        pdf.cell(w1[1], 8, f"{n_chk:.3f}", align='C')
+        pdf.cell(w1[2], 8, f"{e_chk:.3f}", align='C')
+        pdf.cell(w1[3], 8, f"{n_orig:.3f}", align='C')
+        pdf.cell(w1[4], 8, f"{e_orig:.3f}", align='C')
+        pdf.cell(w1[5], 8, f"{dn:.3f}", align='C')
+        pdf.cell(w1[6], 8, f"{de:.3f}", align='C')
+        pdf.cell(w1[7], 8, f"{ds:.3f}", align='C')
+        pdf.ln()
+        
+    if len(check_pts) > 0:
+        pdf.set_x(offset)
+        summary_text = f"共 {len(check_pts)} 個點，其中最大較差 dN({max_dn_p} : {max_dn_val:.3f}) dE({max_de_p} : {max_de_val:.3f}) d({max_ds_p} : {max_ds_val:.3f})"
+        pdf.cell(sum(w1), 8, summary_text, align='L')
+        pdf.ln()
+    
+    # ==========================
+    # 2. 距離檢核 (強制換頁)
+    # ==========================
+    pdf.add_page()
+    pdf.set_font('tc', '', 12)
+    pdf.cell(0, 10, "<<<< 距離檢核 >>>>", ln=True, align='L')
+    pdf.set_font('tc', '', 10)
+    pdf.cell(0, 6, "# : [較差] > 1/5000 × [距離]", ln=True, align='L')
+    pdf.cell(0, 6, "! : [較差]判定為 # , 惟小於 30 mm", ln=True, align='L')
+    pdf.ln(5)
+    
+    pdf.set_font('tc', '', 9)
+    w2 = [18, 18, 28, 28, 20, 30, 20, 18] 
+    offset2 = (210 - sum(w2))/2
+    
+    pdf.set_x(offset2)
+    headers2 = ["測站", "測站", "檢測距離(m)", "反算距離(m)", "較差", "距離/較差", "容許值#", "備註"]
+    for i, h in enumerate(headers2):
+        pdf.cell(w2[i], 8, h, border='B', align='C')
+    pdf.ln()
+    
+    min_ratio = float('inf')
+    min_ratio_p1, min_ratio_p2 = "", ""
+
+    for p1, p2 in itertools.combinations(check_pts, 2):
+        d_orig, _ = calc_dist_azimuth(df_t.loc[p1,'N_TWD97'], df_t.loc[p1,'E_TWD97'], df_t.loc[p2,'N_TWD97'], df_t.loc[p2,'E_TWD97'])
+        d_chk, _ = calc_dist_azimuth(df_g.loc[p1,'N'], df_g.loc[p1,'E'], df_g.loc[p2,'N'], df_g.loc[p2,'E'])
+        diff = abs(d_orig - d_chk)
+        allow = d_orig / 5000.0
+        ratio = int(d_orig / diff) if diff > 0.0001 else float('inf')
+        
+        if ratio < min_ratio:
+            min_ratio = ratio
+            min_ratio_p1, min_ratio_p2 = p1, p2
+        
+        note = ""
+        if diff > allow:
+            if diff < 0.030: note = "!"
+            else: note = "#"
+            
+        pdf.set_x(offset2)
+        pdf.cell(w2[0], 8, p1, align='C')
+        pdf.cell(w2[1], 8, p2, align='C')
+        pdf.cell(w2[2], 8, f"{d_chk:.3f}", align='C')
+        pdf.cell(w2[3], 8, f"{d_orig:.3f}", align='C')
+        pdf.cell(w2[4], 8, f"{diff:.3f}", align='C')
+        pdf.cell(w2[5], 8, str(ratio) if ratio != float('inf') else "無限大", align='C')
+        pdf.cell(w2[6], 8, f"{allow:.3f}", align='C')
+        pdf.cell(w2[7], 8, note, align='C')
+        pdf.ln()
+
+    # 👉 距離檢核表專屬：輸出最低精度總結
+    pdf.ln(5)
+    if min_ratio != float('inf') and min_ratio_p1 != "":
+        pdf.set_font('tc', '', 10)
+        pdf.set_x(offset2)
+        pdf.cell(0, 8, f"相對精度最低為 {min_ratio_p1} --> {min_ratio_p2} : 1 / {int(min_ratio)}", ln=True)
+
+    # ==========================
+    # 3. 方位角檢核 (強制換頁)
+    # ==========================
+    pdf.add_page()
+    pdf.set_font('tc', '', 12)
+    pdf.cell(0, 10, "<<<< 方位角檢核 >>>>", ln=True, align='L')
+    pdf.ln(5)
+    
+    pdf.set_font('tc', '', 10)
+    w3 = [20, 20, 40, 40, 25, 35] 
+    offset3 = (210 - sum(w3))/2
+    
+    pdf.set_x(offset3)
+    headers3 = ["測站", "測站", "檢測方位角", "反算方位角", "較差(秒)", "備註"]
+    for i, h in enumerate(headers3):
+        pdf.cell(w3[i], 8, h, border='B', align='C')
+    pdf.ln()
+    
+    max_az_diff = -1.0
+    max_az_p1, max_az_p2 = "", ""
+    max_az_dist = 0.0
+
+    for p1, p2 in itertools.combinations(check_pts, 2):
+        d_orig, az_orig = calc_dist_azimuth(df_t.loc[p1,'N_TWD97'], df_t.loc[p1,'E_TWD97'], df_t.loc[p2,'N_TWD97'], df_t.loc[p2,'E_TWD97'])
+        _, az_chk = calc_dist_azimuth(df_g.loc[p1,'N'], df_g.loc[p1,'E'], df_g.loc[p2,'N'], df_g.loc[p2,'E'])
+        
+        daz_sec = (az_orig - az_chk) * 3600
+        if daz_sec > 180*3600: daz_sec -= 360*3600
+        if daz_sec < -180*3600: daz_sec += 360*3600
+        daz_sec = abs(daz_sec)
+        
+        if daz_sec > max_az_diff:
+            max_az_diff = daz_sec
+            max_az_p1, max_az_p2 = p1, p2
+            max_az_dist = d_orig
+        
+        pdf.set_x(offset3)
+        pdf.cell(w3[0], 8, p1, align='C')
+        pdf.cell(w3[1], 8, p2, align='C')
+        pdf.cell(w3[2], 8, dec2dms(az_chk), align='C')
+        pdf.cell(w3[3], 8, dec2dms(az_orig), align='C')
+        pdf.cell(w3[4], 8, f"{daz_sec:.2f}", align='C')
+        pdf.cell(w3[5], 8, "", align='C')
+        pdf.ln()
+
+    # 👉 方位角檢核表專屬：輸出最大方位角較差與距離總結
+    pdf.ln(5)
+    if max_az_diff != -1.0 and max_az_p1 != "":
+        pdf.set_x(offset3)
+        pdf.cell(0, 8, f"方位角較差最大為 {max_az_p1} --> {max_az_p2} : {max_az_diff:.2f} 秒 ({max_az_dist:.3f} m)", ln=True)
+
+    # 輸出 PDF Bytes
+    try:
+        pdf_bytes = bytes(pdf.output())
+    except TypeError:
+        pdf_bytes = pdf.output(dest='S').encode('latin1')
+    return pdf_bytes
 
 def generate_report_8_1_integrated(df_res, baseline_data):
     wb = Workbook(); ws = wb.active; ws.title = "整合式檢測成果表"
@@ -522,64 +737,122 @@ def calculate_residual_correction(tn, te, df_res, power=2):
 with col_right:
     st.header("📝 第四區：檢核流程與暫存")
     c1, c2 = st.columns(2)
+    
     if c1.button("1️⃣ 檢核 第 1 測回", use_container_width=True): 
         if files_round1:
-            d, l = process_single_round(files_round1, "第 1 測回")
-            if d: st.session_state.current_stage_data=d; st.session_state.logs=l; st.session_state.current_stage_name="第 1 測回"
-        else: st.error("請先上傳第 1 測回檔案")
+            with st.spinner("📦 正在合併並運算 1 測回資料，檔案較多請稍候..."):
+                d, l = process_single_round(files_round1, "第 1 測回")
+                st.session_state.logs = l
+                st.session_state.current_stage_name = "第 1 測回"
+                
+                if d:
+                    # 加入「寫入」布林值欄位，預設為 True (全選)
+                    df_preview = pd.DataFrame(d)
+                    df_preview.insert(0, '寫入', True)
+                    st.session_state.current_stage_data = df_preview.to_dict('records')
+                    st.success(f"✅ 第 1 測回檢核完成，共 {len(d)} 筆合格測點。請在下方確認並寫入暫存區！")
+                else:
+                    st.session_state.current_stage_data = None
+                    st.error("⚠️ 檢核完畢，但【沒有任何測點】符合合格標準。請展開下方「檢核日誌」查看原因！")
+        else: 
+            st.error("請先上傳第 1 測回檔案")
+            
     if c2.button("2️⃣ 檢核 第 2 測回", use_container_width=True):
         if files_round2:
-            d, l = process_single_round(files_round2, "第 2 測回")
-            if d: st.session_state.current_stage_data=d; st.session_state.logs=l; st.session_state.current_stage_name="第 2 測回"
-        else: st.error("請先上傳第 2 測回檔案")
+            with st.spinner("📦 正在合併並運算 2 測回資料，檔案較多請稍候..."):
+                d, l = process_single_round(files_round2, "第 2 測回")
+                st.session_state.logs = l
+                st.session_state.current_stage_name = "第 2 測回"
+                
+                if d:
+                    # 加入「寫入」布林值欄位，預設為 True (全選)
+                    df_preview = pd.DataFrame(d)
+                    df_preview.insert(0, '寫入', True)
+                    st.session_state.current_stage_data = df_preview.to_dict('records')
+                    st.success(f"✅ 第 2 測回檢核完成，共 {len(d)} 筆合格測點。請在下方確認並寫入暫存區！")
+                else:
+                    st.session_state.current_stage_data = None
+                    st.error("⚠️ 檢核完畢，但【沒有任何測點】符合合格標準。請展開下方「檢核日誌」查看原因！")
+        else: 
+            st.error("請先上傳第 2 測回檔案")
     
     if st.session_state.current_stage_name != "":
-        st.markdown("---"); st.info(f"預覽: {st.session_state.current_stage_name}")
-        with st.expander("檢核日誌", expanded=True):
-            for line in st.session_state.logs: 
-                if "✅" in line: st.success(line)
-                elif "❌" in line: st.error(line)
-                else: st.write(line)
+        st.markdown("---")
+        st.info(f"預覽: {st.session_state.current_stage_name}")
+        
+        # 預設將日誌收合，讓畫面保持乾淨
+        with st.expander("檢核日誌", expanded=False):
+            if 'logs' in st.session_state and st.session_state.logs:
+                for line in st.session_state.logs: 
+                    if "✅" in line: st.success(line)
+                    elif "❌" in line: st.error(line)
+                    else: st.write(line)
+            else:
+                st.write("尚無日誌資料。")
+                
+        # 互動式預覽與寫入區塊
         if st.session_state.current_stage_data:
-            st.dataframe(pd.DataFrame(st.session_state.current_stage_data).head(3))
-            if st.button("💾 寫入暫存庫", type="primary", use_container_width=True):
-                st.session_state.temp_database.extend(st.session_state.current_stage_data)
-                st.success("✅ 寫入成功"); st.rerun()
+            st.write("▼ **請勾選欲保留的資料 (系統已預設全選):**")
+            
+            df_to_edit = pd.DataFrame(st.session_state.current_stage_data)
+            edited_preview = st.data_editor(
+                df_to_edit, 
+                hide_index=True, 
+                use_container_width=True, 
+                column_config={"寫入": st.column_config.CheckboxColumn(required=True)},
+                disabled=["測點名稱", "測回別", "有效筆數", "總計點數", "使用比率", "N", "E", "H", "儀器高", "平均時間", "起測時間", "結束時間", "PDOP"]
+            )
+            
+            if st.button("💾 將勾選資料寫入暫存區", type="primary", use_container_width=True):
+                # 篩選有打勾的資料
+                selected_data = edited_preview[edited_preview['寫入'] == True].drop(columns=['寫入']).to_dict('records')
+                
+                if selected_data:
+                    st.session_state.temp_database.extend(selected_data)
+                    # 寫入成功後清空預覽，防止重複點擊
+                    st.session_state.current_stage_data = None 
+                    st.rerun() 
+                else:
+                    st.warning("⚠️ 您沒有勾選任何資料，無法寫入。")
 
-    st.markdown("---"); st.header("📝 第五區：暫存資料庫管理")
+    # ==========================================================
+    # 📝 第五區：暫存資料庫管理 (已一本化修復，絕不重複顯示)
+    # ==========================================================
+    st.markdown("---")
+    st.header("📝 第五區：暫存資料庫管理")
     if st.session_state.temp_database:
         df_db = pd.DataFrame(st.session_state.temp_database)
-        if "移除" not in df_db.columns: df_db.insert(0, "移除", False)
-        edited_df = st.data_editor(df_db, hide_index=True, use_container_width=True, disabled=["測點名稱", "測回別", "有效筆數", "N", "E", "H", "儀器高"])
-        cd1, cd2 = st.columns([1,4])
-        if cd1.button("🗑️ 刪除選取"): st.session_state.temp_database = edited_df[edited_df['移除']==False].drop(columns=['移除']).to_dict('records'); st.rerun()
-        if cd2.button("💣 清空全部"): st.session_state.temp_database=[]; st.rerun()
-    else: st.info("暫存區為空")
-
-    st.markdown("---"); st.header("📤 第六區：觀測品質與坐標檢核")
-    if st.session_state.temp_database:
-        r6_limits = {'diff_inst': diff_inst_limit, 'diff_plane': diff_plane_limit, 'diff_elev': diff_elev_limit, 'time_gap': time_gap_limit}
-        cr1, cr2, cr3 = st.columns(3)
-        with cr1: 
-            f6_1 = generate_report_6_1_accuracy(st.session_state.temp_database, r6_limits)
-            st.download_button("📊 下載 報表6-1.精度檢核總表", f6_1, "報表6-1_單雙測回精度檢核總表.xlsx", use_container_width=True)
-        with cr2:
-            f6_2 = generate_report_6_2_center(st.session_state.temp_database)
-            st.download_button("📝 下載 報表6-2.測繪中心檢核表", f6_2, "報表6-2_成果檢核表_測繪中心版.xlsx", use_container_width=True)
-        with cr3:
-            f6_3 = generate_report_6_3_coord(st.session_state.temp_database)
-            st.download_button("📍 下載 報表6-3.坐標成果表", f6_3, "報表6-3_e-GNSS坐標成果表.xlsx", use_container_width=True)
-
-            # ====== 新增：外業紀錄表匯出區塊 ======
+        if "移除" not in df_db.columns: 
+            df_db.insert(0, "移除", False)
+            
+        edited_df = st.data_editor(
+            df_db, 
+            hide_index=True, 
+            use_container_width=True, 
+            column_config={"移除": st.column_config.CheckboxColumn(required=True)},
+            disabled=["測點名稱", "測回別", "有效筆數", "總計點數", "使用比率", "N", "E", "H", "儀器高", "平均時間", "起測時間", "結束時間", "PDOP"]
+        )
+        
+        cd1, cd2 = st.columns([1, 4])
+        if cd1.button("🗑️ 刪除選取"): 
+            st.session_state.temp_database = edited_df[edited_df['移除'] == False].drop(columns=['移除']).to_dict('records')
+            st.rerun()
+        if cd2.button("💣 清空全部"): 
+            st.session_state.temp_database = []
+            st.rerun()
+            
+        # ====== 修復：外業紀錄表匯出區塊 (移入「有資料」的判斷式內) ======
         st.markdown("#### 📋 附加報表：測量外業紀錄表 (PDF)")
-        c_pdf1, c_pdf2 = st.columns([1, 2])
+        
+        c_pdf1, c_pdf2, c_pdf3 = st.columns([2, 1, 1.5]) 
         with c_pdf1:
-            # 預設帶入您的姓名，也可以隨時修改
-            personnel_name = st.text_input("測量人員姓名", value="賴柏霖")
+            proj_name = st.text_input("專案名稱", value="115年度仁愛鄉非都市計畫地區圖解數化地籍圖整合建置作業")
         with c_pdf2:
+            personnel_name = st.text_input("測量人員姓名", value="賴柏霖")
+        with c_pdf3:
             st.write("") # 排版佔位
             st.write("")
-            pdf_data = generate_field_record_pdf(st.session_state.temp_database, personnel=personnel_name)
+            pdf_data = generate_field_record_pdf(st.session_state.temp_database, personnel=personnel_name, project_name=proj_name)
             if pdf_data:
                 st.download_button(
                     label="📄 下載 VBS-RTK 測量外業紀錄表 (PDF)",
@@ -589,6 +862,42 @@ with col_right:
                     type="primary",
                     use_container_width=True
                 )
+    else: 
+        st.info("暫存區為空")
+
+# ==========================================================
+    # 📤 補回：第六區：觀測品質與坐標檢核 (已修正函數名稱與門檻傳遞)
+    # ==========================================================
+    st.markdown("---")
+    st.header("📤 第六區：觀測品質與坐標檢核")
+    
+    if st.session_state.temp_database:
+        # 讀取左側欄的檢核門檻，打包成 limits 傳給 6-1 報表
+        limits = {
+            'diff_inst': diff_inst_limit,
+            'diff_plane': diff_plane_limit,
+            'diff_elev': diff_elev_limit,
+            'time_gap': time_gap_limit
+        }
+        
+        c6_1, c6_2, c6_3 = st.columns(3)
+        with c6_1:
+            # 修正函數名稱為 generate_report_6_1_accuracy，並傳入 limits
+            f_6_1 = generate_report_6_1_accuracy(st.session_state.temp_database, limits)
+            st.download_button("📊 下載 報表6-1.精度檢核總表", f_6_1, "報表6-1_精度檢核總表.xlsx", use_container_width=True)
+            
+        with c6_2:
+            # 修正函數名稱為 generate_report_6_2_center
+            f_6_2 = generate_report_6_2_center(st.session_state.temp_database)
+            if f_6_2 is not None:
+                st.download_button("⚖️ 下載 報表6-2.成果檢核表(測繪中心版)", f_6_2, "報表6-2_成果檢核表.xlsx", use_container_width=True)
+                
+        with c6_3:
+            # 修正函數名稱為 generate_report_6_3_coord
+            f_6_3 = generate_report_6_3_coord(st.session_state.temp_database)
+            st.download_button("🎯 下載 報表6-3.坐標成果表", f_6_3, "報表6-3_坐標成果表.xlsx", use_container_width=True)
+    else:
+        st.info("請先將合格資料寫入第五區暫存區，即可產製第六區報表。")
 
     st.markdown("---"); st.header("🏁 第七區：六參數優化與強制附合")
     sample_kp = pd.DataFrame({'測點名稱': ['R266', 'R291', 'SW52', 'SW61'], 'N': [2545455.695, 2537041.401, 2536216.438, 2538963.044], 'E': [179627.685, 177281.763, 191536.663, 195893.554]})
@@ -596,7 +905,7 @@ with col_right:
     with pd.ExcelWriter(f_kp_sample, engine='openpyxl') as writer: sample_kp.to_excel(writer, index=False)
     f_kp_sample.seek(0)
     st.download_button("📥 下載 已知點清冊範例檔", f_kp_sample, "已知點清冊範例.xlsx")
-    
+
     kp_file = st.file_uploader("📂 上傳 已知控制點清冊", type=['csv', 'xlsx'], key="kp_u")
     
     if kp_file and st.session_state.temp_database:
@@ -605,95 +914,121 @@ with col_right:
             else: df_kp = pd.read_excel(kp_file)
             df_kp.columns = df_kp.columns.str.replace('\n', '').str.replace('"', '').str.strip()
             
+            # 加入除錯機制，提示目前抓到的欄位
             if {'測點名稱','N','E'}.issubset(df_kp.columns):
                 obs_avg = pd.DataFrame(st.session_state.temp_database).groupby('測點名稱')[['N','E']].mean().reset_index().to_dict('records')
                 known_list = df_kp[['測點名稱','N','E']].to_dict('records')
                 
-                if st.session_state.trans_residuals is None:
-                    p, df_res, rmse, vv, n = compute_6_parameters_optimized(obs_avg, known_list)
-                    if df_res is not None:
-                        st.session_state.trans_residuals = df_res; st.session_state.trans_rmse = rmse; st.session_state.trans_params = p; st.session_state.trans_vv = vv
+                # 💡 新增：計算同名點位數量並給予明確提示
+                obs_pts = set([str(r['測點名稱']) for r in obs_avg])
+                known_pts = set([str(r['測點名稱']) for r in known_list])
+                common_pts = obs_pts.intersection(known_pts)
+                
+                if len(common_pts) < 3:
+                    st.error(f"❌ 錯誤：匹配到的同名控制點數量不足！(至少需要 3 點，目前僅匹配到 {len(common_pts)} 點)")
+                    st.warning("🔍 請檢查「暫存區」與「已知點清冊」的測點名稱是否完全一致：")
+                    st.info(f"👉 您的暫存區有這些點：{', '.join(list(obs_pts))}\n👉 您的已知點清冊有這些點：{', '.join(list(known_pts))}")
+                else:
+                    if st.session_state.trans_residuals is None:
+                        p, df_res, rmse, vv, n = compute_6_parameters_optimized(obs_avg, known_list)
+                        if df_res is not None:
+                            st.session_state.trans_residuals = df_res
+                            st.session_state.trans_rmse = rmse
+                            st.session_state.trans_params = p
+                            st.session_state.trans_vv = vv
 
-                if st.session_state.trans_residuals is not None:
-                    st.subheader("🔍 殘差比較與點位優化")
-                    st.caption("請勾選您要採用進行「強制附合」的點位。")
-                    
-                    edited_res = st.data_editor(st.session_state.trans_residuals, hide_index=True, use_container_width=True, 
-                                                column_config={"採用": st.column_config.CheckboxColumn(default=True)},
-                                                disabled=["測點名稱", "N_已知(Ground)", "E_已知(Ground)", "N_轉換(GPS)", "E_轉換(GPS)", "VX", "VY", "平面殘差"])
-                    
-                    c_opt1, c_opt2 = st.columns(2)
-                    if c_opt1.button("🚀 重新解算 (僅限採用點位)", use_container_width=True):
-                        selected_pts = edited_res[edited_res['採用']==True]['測點名稱'].tolist()
-                        if len(selected_pts) < 3:
-                            st.error("❌ 至少需要保留 3 個控制點才能進行解算！")
-                        else:
-                            p_new, df_res_new, rmse_new, vv_new, n_new = compute_6_parameters_optimized(obs_avg, known_list, selected_pts)
-                            st.session_state.trans_residuals = df_res_new
-                            st.session_state.trans_rmse = rmse_new
-                            st.session_state.trans_params = p_new
-                            st.session_state.trans_vv = vv_new
-                            st.success(f"優化完成！採用點數: {n_new}, 新 RMSE: {rmse_new:.4f}m"); st.rerun()
-                    
-                    if c_opt2.button("🌍 執行全區強制附合", type="primary", use_container_width=True):
-                        st.session_state.trans_residuals = edited_res
-                        p = st.session_state.trans_params
-                        obs_all = pd.DataFrame(st.session_state.temp_database).groupby('測點名稱')[['N','E','H']].mean().reset_index()
-                        res_final = []
-                        selected_df = edited_res[edited_res['採用']==True]
-                        for _, r in obs_all.iterrows():
-                            na = p[0]*r['N'] + p[1]*r['E'] + p[2]; ea = p[3]*r['N'] + p[4]*r['E'] + p[5]
-                            dn, de = calculate_residual_correction(na, ea, selected_df)
-                            res_final.append({'測點名稱': r['測點名稱'], 'N_TWD97': na+dn, 'E_TWD97': ea+de, 'H': r['H']})
-                        st.session_state.final_twd97_data = res_final
-                        st.success("✅ 全區轉換完成 (已依據採用點位執行殘差分配)")
+                    if st.session_state.trans_residuals is not None:
+                        st.success(f"✅ 成功匹配 {len(common_pts)} 個控制點，已自動完成初始轉換！")
+                        st.subheader("🔍 殘差比較與點位優化")
+                        st.caption("請勾選您要採用進行「強制附合」的點位。")
                         
-                    if st.session_state.final_twd97_data:
-                        st.markdown("#### 📤 第七區：轉換與優化報表下載")
-                        cd_7_1, cd_7_2, cd_7_3 = st.columns(3)
-                        with cd_7_1:
-                            f_7_1 = generate_report_7_1_residuals(st.session_state.trans_residuals)
-                            st.download_button("🔍 下載 報表7-1.已知點殘差表", f_7_1, "報表7-1_已知點殘差與優化比較表.xlsx", use_container_width=True)
-                        with cd_7_2:
-                            f_7_2 = generate_report_7_2_transform(st.session_state.trans_params, st.session_state.trans_residuals, st.session_state.trans_rmse, st.session_state.trans_vv)
-                            st.download_button("⚙️ 下載 報表7-2.轉換參數報表", f_7_2, "報表7-2_六參數轉換報表.xlsx", use_container_width=True)
-                        with cd_7_3:
-                            f_7_3 = generate_report_7_3_final_coords(st.session_state.final_twd97_data, st.session_state.trans_residuals)
-                            st.download_button("📍 下載 報表7-3.最終坐標清冊", f_7_3, "報表7-3_最終坐標成果清冊.xlsx", use_container_width=True)
-
+                        edited_res = st.data_editor(st.session_state.trans_residuals, hide_index=True, use_container_width=True, 
+                                                    column_config={"採用": st.column_config.CheckboxColumn(default=True)},
+                                                    disabled=["測點名稱", "N_已知(Ground)", "E_已知(Ground)", "N_轉換(GPS)", "E_轉換(GPS)", "VX", "VY", "平面殘差"])
+                        
+                        c_opt1, c_opt2 = st.columns(2)
+                        if c_opt1.button("🚀 重新解算 (僅限採用點位)", use_container_width=True):
+                            selected_pts = edited_res[edited_res['採用']==True]['測點名稱'].tolist()
+                            if len(selected_pts) < 3:
+                                st.error("❌ 至少需要保留 3 個控制點才能進行解算！")
+                            else:
+                                p_new, df_res_new, rmse_new, vv_new, n_new = compute_6_parameters_optimized(obs_avg, known_list, selected_pts)
+                                st.session_state.trans_residuals = df_res_new
+                                st.session_state.trans_rmse = rmse_new
+                                st.session_state.trans_params = p_new
+                                st.session_state.trans_vv = vv_new
+                                st.success(f"優化完成！採用點數: {n_new}, 新 RMSE: {rmse_new:.4f}m"); st.rerun()
+                        
+                        if c_opt2.button("🌍 執行全區強制附合", type="primary", use_container_width=True):
+                            st.session_state.trans_residuals = edited_res
+                            p = st.session_state.trans_params
+                            obs_all = pd.DataFrame(st.session_state.temp_database).groupby('測點名稱')[['N','E','H']].mean().reset_index()
+                            res_final = []
+                            selected_df = edited_res[edited_res['採用']==True]
+                            for _, r in obs_all.iterrows():
+                                na = p[0]*r['N'] + p[1]*r['E'] + p[2]; ea = p[3]*r['N'] + p[4]*r['E'] + p[5]
+                                dn, de = calculate_residual_correction(na, ea, selected_df)
+                                res_final.append({'測點名稱': r['測點名稱'], 'N_TWD97': na+dn, 'E_TWD97': ea+de, 'H': r['H']})
+                            st.session_state.final_twd97_data = res_final
+                            st.success("✅ 全區轉換完成 (已依據採用點位執行殘差分配)")
+                            
+                        if st.session_state.final_twd97_data:
+                            st.markdown("#### 📤 第七區：轉換與優化報表下載")
+                            cd_7_1, cd_7_2, cd_7_3 = st.columns(3)
+                            with cd_7_1:
+                                f_7_1 = generate_report_7_1_residuals(st.session_state.trans_residuals)
+                                st.download_button("🔍 下載 報表7-1.已知點殘差表", f_7_1, "報表7-1_已知點殘差與優化比較表.xlsx", use_container_width=True)
+                            with cd_7_2:
+                                f_7_2 = generate_report_7_2_transform(st.session_state.trans_params, st.session_state.trans_residuals, st.session_state.trans_rmse, st.session_state.trans_vv)
+                                st.download_button("⚙️ 下載 報表7-2.轉換參數報表", f_7_2, "報表7-2_六參數轉換報表.xlsx", use_container_width=True)
+                            with cd_7_3:
+                                f_7_3 = generate_report_7_3_final_coords(st.session_state.final_twd97_data, st.session_state.trans_residuals)
+                                st.download_button("📍 下載 報表7-3.最終坐標清冊", f_7_3, "報表7-3_最終坐標成果清冊.xlsx", use_container_width=True)
             else:
-                st.error("欄位需包含: 測點名稱, N, E")
-        except Exception as e: st.error(str(e))
+                st.error(f"❌ 錯誤：已知點清冊缺少必要欄位！\n目前的欄位有: {list(df_kp.columns)}\n請確保表頭必須包含: `測點名稱`, `N`, `E` (大小寫須完全一致)")
+        except Exception as e: 
+            st.error(f"檔案讀取失敗: {str(e)}")
 
-    # ================= 8. 第八區：基線比較與實地檢測 =================
+# ================= 8. 第八區：基線比較與實地檢測 =================
     if st.session_state.final_twd97_data:
         st.markdown("---")
         st.header("🔍 第八區：基線檢核與實地檢測")
         
-        if st.button("🚀 計算全組合基線與整合檢測", type="primary", use_container_width=True):
+        if st.button("🚀 計算非已知點全組合基線與檢測", type="primary", use_container_width=True):
             df_twd97 = pd.DataFrame(st.session_state.final_twd97_data).set_index('測點名稱')
-            df_gnss = pd.DataFrame(st.session_state.temp_database).groupby('測點名稱')[['N','E']].mean()
             
+            # 篩選出「非已知點」(將打勾採用作轉換的控制點剃除)
             used_pts = st.session_state.trans_residuals[st.session_state.trans_residuals['採用']==True]['測點名稱'].tolist()
-            common_pts = sorted(list(set(used_pts) & set(df_twd97.index)))
+            check_pts = [p for p in df_twd97.index if p not in used_pts]
             
-            results_b = []
-            for p1, p2 in itertools.combinations(common_pts, 2):
-                d_g, az_g = calc_dist_azimuth(df_gnss.loc[p1,'N'], df_gnss.loc[p1,'E'], df_gnss.loc[p2,'N'], df_gnss.loc[p2,'E'])
-                d_t, az_t = calc_dist_azimuth(df_twd97.loc[p1,'N_TWD97'], df_twd97.loc[p1,'E_TWD97'], df_twd97.loc[p2,'N_TWD97'], df_twd97.loc[p2,'E_TWD97'])
-                az_diff_sec = (az_t - az_g) * 3600
-                if az_diff_sec > 180*3600: az_diff_sec -= 360*3600
-                if az_diff_sec < -180*3600: az_diff_sec += 360*3600
-                results_b.append({'From': p1, 'To': p2, 'Dist_eGNSS': d_g, 'Dist_TWD97': d_t, 'dDist': d_t - d_g, 'Az_eGNSS': az_g, 'dAzi_Sec': az_diff_sec})
-            
-            st.session_state.baseline_check_data = results_b
-            st.success(f"已完成 {len(results_b)} 組控制點基線比對！")
+            if len(check_pts) < 2:
+                st.warning("⚠️ 檢測點 (非已知點) 數量不足 2 點，無法組成基線進行比對！請確認您的資料集包含足夠的檢測點。")
+            else:
+                # 儲存到 session_state 供下載報表使用
+                st.session_state.baseline_check_data = {
+                    'twd97': st.session_state.final_twd97_data,
+                    'gnss': st.session_state.temp_database,
+                    'check_pts': check_pts
+                }
+                st.success(f"✅ 已完成 {len(check_pts)} 個非已知點的坐標、基線長度與方位角比對！")
 
-        if st.session_state.baseline_check_data:
-            df_base = pd.DataFrame(st.session_state.baseline_check_data)
+        if st.session_state.baseline_check_data and isinstance(st.session_state.baseline_check_data, dict):
+            # 產製符合國土測繪中心格式的 PDF 報表
+            f_8_1_pdf = generate_report_8_1_nlsc_pdf(
+                st.session_state.baseline_check_data['twd97'], 
+                st.session_state.baseline_check_data['gnss'], 
+                st.session_state.baseline_check_data['check_pts']
+            )
             
-            f_8_1 = generate_report_8_1_integrated(st.session_state.trans_residuals, st.session_state.baseline_check_data)
-            st.download_button("📝 下載 報表8-1.整合式檢測成果表 (含坐標/距離/方位角)", f_8_1, "報表8-1_全組合基線與整合檢測表.xlsx", type="primary", use_container_width=True)
+            if f_8_1_pdf:
+                st.download_button(
+                    label="📄 下載 報表8-1.點位坐標與基線檢測成果 (PDF格式)", 
+                    data=f_8_1_pdf, 
+                    file_name="報表8-1_點位坐標與基線檢測成果.pdf", 
+                    mime="application/pdf", 
+                    type="primary", 
+                    use_container_width=True
+                )
             
             st.markdown("#### 📏 實地外業檢測 (短邊 < 100m)")
             
