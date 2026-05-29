@@ -95,7 +95,7 @@ def process_single_round(file_list, round_name):
             
             # 3. 過濾條件: Fixed 解 + 誤差門檻內
             valid_group = stn_data[
-                (stn_data['解算狀態'].astype(str).str.contains('Fixed', case=False, na=False)) &
+                (stn_data['解算狀態'].astype(str).str.contains('Fixed|固定', case=False, na=False, regex=True)) &
                 (stn_data['固定解平面誤差(m)'] <= err_plane) &
                 (stn_data['固定解高程誤差(m)'] <= err_elev)
             ]
