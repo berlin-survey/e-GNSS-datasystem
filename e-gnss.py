@@ -83,8 +83,8 @@ def process_single_round(file_list, round_name):
         df['觀測時間_dt'] = pd.to_datetime(df['觀測時間'], errors='coerce')
         
         # 👇 ================= 新增這行：自動修剪測點名稱的尾巴 ================= 👇
-        # 利用正規表達式，將結尾是「-數字」的部分自動刪除 (例如 BO001-1 變成 BO001)
-        df['測點名稱'] = df['測點名稱'].astype(str).str.replace(r'-\d+$', '', regex=True)
+        # 利用正規表達式，將結尾是「-數字或_數字」的部分自動刪除 (例如 BO001-1 變成 BO001)
+        df['測點名稱'] = df['測點名稱'].astype(str).str.replace(r'[-_]\d+$', '', regex=True)
         # 👆 ==================================================================== 👆
         
         final_results = []
