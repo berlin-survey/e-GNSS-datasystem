@@ -1289,102 +1289,102 @@ with col_right:
         st.header("🔍 第八區：基線檢核與實地檢測")
         
         if st.button("🚀 計算非已知點全組合基線與檢測", type="primary", use_container_width=True):
-            df_twd97 = pd.DataFrame(st.session_state.final_twd97_data).set_index('測點名稱')
-            
-            # 篩選出「非已知點」(將打勾採用作轉換的控制點剃除)
-            used_pts = st.session_state.trans_residuals[st.session_state.trans_residuals['採用']==True]['測點名稱'].tolist()
-            check_pts = [p for p in df_twd97.index if p not in used_pts]
-            
-            if len(check_pts) < 2:
-                st.warning("⚠️ 檢測點 (非已知點) 數量不足 2 點，無法組成基線進行比對！請確認您的資料集包含足夠的檢測點。")
-            else:
-                # 儲存到 session_state 供下載報表使用
-                st.session_state.baseline_check_data = {
-                    'twd97': st.session_state.final_twd97_data,
-                    'gnss': st.session_state.temp_database,
-                    'check_pts': check_pts
-                }
-                st.success(f"✅ 已完成 {len(check_pts)} 個非已知點的坐標、基線長度與方位角比對！")
+            with st.spinner("⏳ 正在進行全組合運算與 PDF 報表產製，點數較多時可能需要數十秒，請稍候..."):
+                df_twd97 = pd.DataFrame(st.session_state.final_twd97_data).set_index('測點名稱')
+                
+                # 篩選出「非已知點」(將打勾採用作轉換的控制點剃除)
+                used_pts = st.session_state.trans_residuals[st.session_state.trans_residuals['採用']==True]['測點名稱'].tolist()
+                check_pts = [p for p in df_twd97.index if p not in used_pts]
+                
+                if len(check_pts) < 2:
+                    st.warning("⚠️ 檢測點 (非已知點) 數量不足 2 點，無法組成基線進行比對！")
+                else:
+                    st.session_state.baseline_check_data = {
+                        'twd97': st.session_state.final_twd97_data,
+                        'gnss': st.session_state.temp_database,
+                        'check_pts': check_pts
+                    }
+                    
+                    # 🚀 效能優化 1：直接在按鈕內生成 PDF 並存入 session，避免畫面重整時卡頓
+                    st.session_state.report_8_1_pdf = generate_report_8_1_nlsc_pdf(
+                        st.session_state.final_twd97_data, 
+                        st.session_state.temp_database, 
+                        check_pts
+                    )
+                    
+                    # 🚀 效能優化 2：只計算並保留「小於門檻的短邊」進記憶體，大幅節省資源
+                    all_pts = [r['測點名稱'] for r in st.session_state.final_twd97_data]
+                    all_baselines = []
+                    for p1, p2 in itertools.combinations(all_pts, 2):
+                        n1 = round(df_twd97.loc[p1,'N_TWD97'], 3)
+                        e1 = round(df_twd97.loc[p1,'E_TWD97'], 3)
+                        n2 = round(df_twd97.loc[p2,'N_TWD97'], 3)
+                        e2 = round(df_twd97.loc[p2,'E_TWD97'], 3)
+                        
+                        d_t, _ = calc_dist_azimuth(n1, e1, n2, e2)
+                        if d_t <= short_dist_limit:
+                            all_baselines.append({'From': p1, 'To': p2, 'Dist_TWD97': d_t})
+                    
+                    st.session_state.short_baselines = pd.DataFrame(all_baselines)
+                    st.success(f"✅ 已完成 {len(check_pts)} 個非已知點比對，與全區短邊掃描！")
 
-        if st.session_state.baseline_check_data and isinstance(st.session_state.baseline_check_data, dict):
-            # 產製符合國土測繪中心格式的 PDF 報表
-            f_8_1_pdf = generate_report_8_1_nlsc_pdf(
-                st.session_state.baseline_check_data['twd97'], 
-                st.session_state.baseline_check_data['gnss'], 
-                st.session_state.baseline_check_data['check_pts']
+        # ---------------- UI 渲染區 (瞬間讀取，無效能負擔) ----------------
+        if st.session_state.get('baseline_check_data') and st.session_state.get('report_8_1_pdf'):
+            st.download_button(
+                label="📄 下載 報表8-1.點位坐標與基線檢測成果 (PDF格式)", 
+                data=st.session_state.report_8_1_pdf, 
+                file_name="報表8-1_點位坐標與基線檢測成果.pdf", 
+                mime="application/pdf", 
+                type="primary", 
+                use_container_width=True
             )
-            
-            if f_8_1_pdf:
-                st.download_button(
-                    label="📄 下載 報表8-1.點位坐標與基線檢測成果 (PDF格式)", 
-                    data=f_8_1_pdf, 
-                    file_name="報表8-1_點位坐標與基線檢測成果.pdf", 
-                    mime="application/pdf", 
-                    type="primary", 
-                    use_container_width=True
-                )
             
             st.markdown("#### 📏 實地外業檢測 (短邊 < 100m)")
             
-            all_pts = [r['測點名稱'] for r in st.session_state.final_twd97_data]
-            df_twd97_all = pd.DataFrame(st.session_state.final_twd97_data).set_index('測點名稱')
-
-            all_baselines = []
-            for p1, p2 in itertools.combinations(all_pts, 2):
-                # 🚀 修正：強制 3 位小數後再計算全組合基線
-                n1 = round(df_twd97_all.loc[p1,'N_TWD97'], 3)
-                e1 = round(df_twd97_all.loc[p1,'E_TWD97'], 3)
-                n2 = round(df_twd97_all.loc[p2,'N_TWD97'], 3)
-                e2 = round(df_twd97_all.loc[p2,'E_TWD97'], 3)
-                
-                d_t, _ = calc_dist_azimuth(n1, e1, n2, e2)
-                all_baselines.append({'From': p1, 'To': p2, 'Dist_TWD97': d_t})
-            
-            df_all_base = pd.DataFrame(all_baselines)
-            short_baselines = df_all_base[df_all_base['Dist_TWD97'] <= short_dist_limit].copy()
-            
-            if not short_baselines.empty:
-                st.warning(f"⚠️ 發現 {len(short_baselines)} 組短邊，建議進行實地檢測！")
-                st.dataframe(short_baselines[['From', 'To', 'Dist_TWD97']].style.format({'Dist_TWD97': '{:.3f}'}))
-                
-                sample_data = short_baselines[['From', 'To']].copy()
-                sample_data['實測距離(m)'] = ""
-                f_sample = io.BytesIO()
-                with pd.ExcelWriter(f_sample, engine='openpyxl') as writer: sample_data.to_excel(writer, index=False)
-                f_sample.seek(0)
-                st.download_button("📥 下載 外業檢測紀錄表範例檔", f_sample, "外業短邊檢測紀錄表(空白).xlsx")
-                
-                st.markdown("##### 📤 上傳實測成果進行比對")
-                field_file = st.file_uploader("上傳填寫完成的外業檢測表", type=['xlsx'])
-                
-                if field_file:
-                    try:
-                        df_field = pd.read_excel(field_file)
-                        check_res = []
-                        for _, row in df_field.iterrows():
-                            p1, p2 = str(row['From']), str(row['To'])
-                            match = short_baselines[(short_baselines['From']==p1) & (short_baselines['To']==p2)]
-                            if not match.empty:
-                                d_calc = match.iloc[0]['Dist_TWD97']
-                                d_meas = row.get('實測距離(m)', 0)
-                                if pd.notnull(d_meas):
-                                    dd = abs(d_meas - d_calc)
-                                    is_pass = False
-                                    if dd <= 0.03: is_pass = True
-                                    elif d_calc > 0 and (d_calc / dd) >= 3000: is_pass = True
-                                    status = "合格" if is_pass else "不合格"
-                                    rel = f"1/{int(d_calc/dd)}" if dd > 0.001 else "無限大"
-                                    check_res.append({'From': p1, 'To': p2, 'Dist_Meas': d_meas, 'Dist_Calc': d_calc, 'dDist': dd, 'Rel_Error': rel, 'Status': status})
-                        
-                        if check_res:
-                            st.write("▼ **實地檢測成果比對:**")
-                            st.dataframe(pd.DataFrame(check_res))
-                            f_8_2 = generate_report_8_2_field(check_res)
-                            st.download_button("👷 下載 報表8-2.實地外業檢測報表", f_8_2, "報表8-2_實地外業檢測報表.xlsx", type="primary")
+            if 'short_baselines' in st.session_state:
+                short_baselines = st.session_state.short_baselines
+                if not short_baselines.empty:
+                    st.warning(f"⚠️ 發現 {len(short_baselines)} 組短邊，建議進行實地檢測！")
+                    st.dataframe(short_baselines[['From', 'To', 'Dist_TWD97']].style.format({'Dist_TWD97': '{:.3f}'}))
+                    
+                    sample_data = short_baselines[['From', 'To']].copy()
+                    sample_data['實測距離(m)'] = ""
+                    f_sample = io.BytesIO()
+                    with pd.ExcelWriter(f_sample, engine='openpyxl') as writer: sample_data.to_excel(writer, index=False)
+                    f_sample.seek(0)
+                    st.download_button("📥 下載 外業檢測紀錄表範例檔", f_sample, "外業短邊檢測紀錄表(空白).xlsx")
+                    
+                    st.markdown("##### 📤 上傳實測成果進行比對")
+                    field_file = st.file_uploader("上傳填寫完成的外業檢測表", type=['xlsx'])
+                    
+                    if field_file:
+                        try:
+                            df_field = pd.read_excel(field_file)
+                            check_res = []
+                            for _, row in df_field.iterrows():
+                                p1, p2 = str(row['From']), str(row['To'])
+                                match = short_baselines[(short_baselines['From']==p1) & (short_baselines['To']==p2)]
+                                if not match.empty:
+                                    d_calc = match.iloc[0]['Dist_TWD97']
+                                    d_meas = row.get('實測距離(m)', 0)
+                                    if pd.notnull(d_meas):
+                                        dd = abs(d_meas - d_calc)
+                                        is_pass = False
+                                        if dd <= 0.03: is_pass = True
+                                        elif d_calc > 0 and (d_calc / dd) >= 3000: is_pass = True
+                                        status = "合格" if is_pass else "不合格"
+                                        rel = f"1/{int(d_calc/dd)}" if dd > 0.001 else "無限大"
+                                        check_res.append({'From': p1, 'To': p2, 'Dist_Meas': d_meas, 'Dist_Calc': d_calc, 'dDist': dd, 'Rel_Error': rel, 'Status': status})
                             
-                    except Exception as e: st.error(f"讀取錯誤: {e}")
-            else:
-                st.success("✅ 全區無小於門檻之短邊，無需辦理強制實地檢測。")
+                            if check_res:
+                                st.write("▼ **實地檢測成果比對:**")
+                                st.dataframe(pd.DataFrame(check_res))
+                                f_8_2 = generate_report_8_2_field(check_res)
+                                st.download_button("👷 下載 報表8-2.實地外業檢測報表", f_8_2, "報表8-2_實地外業檢測報表.xlsx", type="primary")
+                                
+                        except Exception as e: st.error(f"讀取錯誤: {e}")
+                else:
+                    st.success("✅ 全區無小於門檻之短邊，無需辦理強制實地檢測。")
 
 # ================= 9. 第九區：地面測量 OBS 整合比較 =================
     if st.session_state.final_twd97_data:
@@ -1399,23 +1399,34 @@ with col_right:
             obs_file = st.file_uploader("📂 上傳 外業 OBS 觀測檔", type=['txt', 'obs'])
             
         if obs_file:
-            dist_data, angle_data = parse_obs_file(obs_file)
-            st.success(f"讀取成功！共解析到 {len(dist_data)} 筆距離觀測、{len(angle_data)} 筆角度觀測。")
+            # 確保同一份檔案只解析一次
+            if st.session_state.get('obs_filename') != obs_file.name:
+                dist_data, angle_data = parse_obs_file(obs_file)
+                st.session_state.dist_data = dist_data
+                st.session_state.angle_data = angle_data
+                st.session_state.obs_filename = obs_file.name
+                st.session_state.pdf_cmp_bytes = None # 清除舊的報表
+                
+            st.success(f"讀取成功！共解析到 {len(st.session_state.dist_data)} 筆距離、{len(st.session_state.angle_data)} 筆角度。")
             
             if st.button("📄 產製 衛星與地面成果比較表 (PDF)", type="primary", use_container_width=True):
-                pts_file_name = kp_file.name if kp_file else "系統暫存控制點"
-                pdf_cmp_bytes = generate_obs_comparison_pdf(
-                    dist_data, 
-                    angle_data, 
-                    st.session_state.final_twd97_data, 
-                    obs_project_name, 
-                    obs_file.name, 
-                    pts_file_name
-                )
-                
+                with st.spinner("⏳ 正在產製比較表..."):
+                    pts_file_name = kp_file.name if kp_file else "系統暫存控制點"
+                    # 將 PDF 存入記憶體
+                    st.session_state.pdf_cmp_bytes = generate_obs_comparison_pdf(
+                        st.session_state.dist_data, 
+                        st.session_state.angle_data, 
+                        st.session_state.final_twd97_data, 
+                        obs_project_name, 
+                        obs_file.name, 
+                        pts_file_name
+                    )
+            
+            # 獨立出來的下載按鈕，不受按鈕狀態刷新的影響
+            if st.session_state.get('pdf_cmp_bytes'):
                 st.download_button(
                     label="📥 下載 衛星與地面成果比較表.pdf",
-                    data=pdf_cmp_bytes,
+                    data=st.session_state.pdf_cmp_bytes,
                     file_name="衛星與地面成果比較表.pdf",
                     mime="application/pdf",
                     use_container_width=True
