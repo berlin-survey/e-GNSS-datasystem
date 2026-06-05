@@ -160,6 +160,258 @@ def adjust_col_width(ws):
 
 # ================= 3. 核心報表模組 =================
 
+from fpdf import FPDF
+class ObsCmpPDF(FPDF):
+    def __init__(self, font_path="msjh.ttc", project_name="", obs_name="", pts_name=""):
+        super().__init__(orientation='P', unit='mm', format='A4')
+        self.font_path = font_path
+        self.project_name = project_name
+        self.obs_name = obs_name
+        self.pts_name = pts_name
+        
+        # 確保自動換頁與底邊距設定正確
+        self.set_auto_page_break(auto=True, margin=15)
+        
+        try:
+            self.add_font('tc', '', self.font_path, uni=True)
+            self.add_font('tc_b', '', self.font_path, uni=True)
+        except Exception as e:
+            st.error(f"字體載入失敗，請確認 {self.font_path} 存在。錯誤：{e}")
+
+    def header(self):
+        self.set_font('tc_b', '', 14)
+        self.cell(0, 8, "* VBS-RTK圖根測量地測邊長比較表 *", ln=True, align='C')
+        self.set_font('tc', '', 11)
+        self.cell(0, 6, f"計劃名稱：{self.project_name}", ln=True, align='L')
+        # 🚀 修正：移除 "[段名] 衛星定位測量成果..." 該行，讓下方資訊自然往上移
+        self.cell(0, 6, f"觀測資料檔：{self.obs_name}", ln=True, align='L')
+        self.cell(0, 6, f"坐標資料檔：{self.pts_name}", ln=True, align='L')
+        self.cell(0, 6, "投影基準：TWD97", ln=True, align='L')
+        self.ln(2)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('tc', '', 10)
+        self.cell(0, 10, f'第 {self.page_no()} 頁', 0, 0, 'C')
+
+# --- DDD.MMSS 角度轉換輔助函數 (維持不變，請確保有這兩個函數) ---
+def dms_to_deg(dms_val):
+    """將 DDD.MMSS 轉為十進位度數 (Float)"""
+    sign = 1 if dms_val >= 0 else -1
+    dms_val = abs(dms_val)
+    d = int(dms_val)
+    m = int((dms_val - d) * 100)
+    s = (dms_val - d - m/100.0) * 10000.0
+    return sign * (d + m/60.0 + s/3600.0)
+
+def deg_to_dms_str(deg_val):
+    """將十進位度數轉為 DDD-MM-SS.S 字串 (具備秒數嚴格進位防護)"""
+    sign = "-" if deg_val < 0 else ""
+    deg_val = abs(deg_val)
+    
+    # 核心修正：先轉換為總秒數，並對齊報表要求的「小數點第一位」進行四捨五入
+    total_sec = round(deg_val * 3600, 1)
+    
+    d = int(total_sec // 3600)
+    m = int((total_sec % 3600) // 60)
+    s = total_sec % 60
+    
+    return f"{sign}{d:03d}-{m:02d}-{s:04.1f}"
+
+# --- 🚀 完美對齊外業資料的 OBS 解析器 ---
+def parse_obs_file(uploaded_file):
+    lines = uploaded_file.getvalue().decode("utf-8", errors="ignore").splitlines()
+    dist_data = []
+    angle_data = []
+    
+    for line in lines:
+        # 去除頭尾空白並以任何空白字元(單個或多個)進行切割
+        parts = line.strip().split()
+        if not parts: 
+            continue
+            
+        record_type = parts[0]
+        
+        # 處理距離觀測量 (必須要有 5 個部分)
+        # 範例: ['1', 'BO049', 'BO102', '1', '76.110']
+        if record_type == '1' and len(parts) >= 5:
+            try:
+                dist_data.append({
+                    'From': parts[1],
+                    'To': parts[2],
+                    'Dist_Ground': float(parts[4]) # 距離數值在 index 4
+                })
+            except ValueError:
+                continue
+                
+        # 處理角度觀測量 (必須要有 6 個部分)
+        # 範例: ['2', 'BO146', 'BO145', 'BO147', '2', '254.1814']
+        elif record_type == '2' and len(parts) >= 6:
+            try:
+                deg_val = dms_to_deg(float(parts[5])) # 角度數值在 index 5
+                angle_data.append({
+                    'BS': parts[1],
+                    'STN': parts[2],
+                    'FS': parts[3],
+                    'Angle_Obs_Deg': deg_val
+                })
+            except ValueError:
+                continue
+                
+    return dist_data, angle_data
+
+def generate_obs_comparison_pdf(dist_data, angle_data, twd97_coords, proj_name, obs_name, pts_name):
+    pdf = ObsCmpPDF(project_name=proj_name, obs_name=obs_name, pts_name=pts_name)
+    pdf.add_page()
+    
+    df_coords = pd.DataFrame(twd97_coords).set_index('測點名稱') if twd97_coords else None
+    
+    # ================= 1. 距離比較表 =================
+    w_dist = [15, 15, 20, 20, 20, 20, 22, 18, 25]
+    offset_dist = (210 - sum(w_dist)) / 2
+
+    # 🚀 新增：將距離表頭打包成函數，方便跨頁時呼叫
+    def draw_dist_header():
+        pdf.set_font('tc_b', '', 9)
+        pdf.set_x(offset_dist)
+        pdf.cell(w_dist[0]+w_dist[1], 5, "", border=0, align='C')
+        pdf.cell(w_dist[2], 5, "地 測", border=0, align='C')
+        pdf.cell(w_dist[3], 5, "海水面", border=0, align='C')
+        pdf.cell(w_dist[4], 5, "投 影", border=0, align='C')
+        pdf.cell(w_dist[5], 5, "改正後", border=0, align='C')
+        pdf.cell(w_dist[6]+w_dist[7]+w_dist[8], 5, "", border=0, align='C')
+        pdf.ln()
+        
+        pdf.set_x(offset_dist)
+        headers_dist = ["點(1)", "點(2)", "平 距", "改 正", "改 正", "距 離", "反算距離", "較差", "相對精度"]
+        for i, h in enumerate(headers_dist):
+            pdf.cell(w_dist[i], 5, h, border='B', align='C')
+        pdf.ln(6)
+        pdf.set_font('tc', '', 9) # 畫完表頭後切換回一般字體
+
+    # 第一次印出距離表頭
+    draw_dist_header()
+    
+    R = 6378137.0  
+    
+    for row in dist_data:
+        # 🚀 跨頁偵測：如果印到接近頁面底端，就換頁並重印表頭
+        if pdf.get_y() > 270:
+            pdf.add_page()
+            draw_dist_header()
+
+        p1, p2 = row['From'], row['To']
+        d_ground = row['Dist_Ground']
+        
+        sea_corr = 0.0  
+        proj_corr = 0.0 
+        d_calc = 0.0
+        diff = 0.0
+        rel_prec = "無限大"
+        d_corr = d_ground 
+        
+        if df_coords is not None and p1 in df_coords.index and p2 in df_coords.index:
+            n1 = round(df_coords.loc[p1, 'N_TWD97'], 3)
+            e1 = round(df_coords.loc[p1, 'E_TWD97'], 3)
+            n2 = round(df_coords.loc[p2, 'N_TWD97'], 3)
+            e2 = round(df_coords.loc[p2, 'E_TWD97'], 3)
+            
+            h1 = df_coords.loc[p1, 'H'] if 'H' in df_coords.columns else 0.0
+            h2 = df_coords.loc[p2, 'H'] if 'H' in df_coords.columns else 0.0
+            
+            h_mean = (h1 + h2) / 2.0
+            sea_corr = - (h_mean / R) * d_ground
+            d_ellipsoid = d_ground + sea_corr
+            
+            e_mean = (e1 + e2) / 2.0
+            k_scale = 0.9999 + ((e_mean - 250000.0) ** 2) / (2.0 * (R ** 2))
+            proj_corr = (k_scale - 1.0) * d_ellipsoid
+            
+            d_corr = d_ground + sea_corr + proj_corr
+            d_calc = math.sqrt((n1 - n2) ** 2 + (e1 - e2) ** 2)
+            diff = d_corr - d_calc
+            rel_prec = f"1/{int(d_calc / abs(diff))}" if abs(diff) > 0.0001 else "無限大"
+
+        pdf.set_x(offset_dist)
+        pdf.cell(w_dist[0], 5, p1, align='C')
+        pdf.cell(w_dist[1], 5, p2, align='C')
+        pdf.cell(w_dist[2], 5, f"{d_ground:.3f}", align='R')
+        pdf.cell(w_dist[3], 5, f"{sea_corr:.3f}", align='R')
+        pdf.cell(w_dist[4], 5, f"{proj_corr:.3f}", align='R')
+        pdf.cell(w_dist[5], 5, f"{d_corr:.3f}", align='R')
+        pdf.cell(w_dist[6], 5, f"{d_calc:.3f}" if d_calc > 0 else "-", align='R')
+        pdf.cell(w_dist[7], 5, f"{diff:.3f}" if d_calc > 0 else "-", align='R')
+        pdf.cell(w_dist[8], 5, str(rel_prec), align='C')
+        pdf.ln()
+
+    # ================= 2. 角度比較表 =================
+    if angle_data:
+        # 如果印完距離表，剩下的空間不夠印表頭和一行數據，就提早換頁
+        if pdf.get_y() > 250:
+            pdf.add_page()
+        else:
+            pdf.ln(10) 
+            
+        w_ang = [25, 25, 25, 30, 30, 25] 
+        offset_ang = (210 - sum(w_ang)) / 2
+        
+        # 🚀 新增：將角度表頭也打包，確保跨頁防呆
+        def draw_ang_header():
+            pdf.set_font('tc_b', '', 9)
+            pdf.set_x(offset_ang)
+            headers_ang = ["後視", "測站", "前視", "地測角度", "反算角度", "較差(\")"]
+            for i, h in enumerate(headers_ang):
+                pdf.cell(w_ang[i], 5, h, border='B', align='C')
+            pdf.ln(6)
+            pdf.set_font('tc', '', 9)
+
+        draw_ang_header()
+        
+        for row in angle_data:
+            # 🚀 角度表跨頁偵測
+            if pdf.get_y() > 270:
+                pdf.add_page()
+                draw_ang_header()
+
+            bs, stn, fs = row['BS'], row['STN'], row['FS']
+            ang_obs_deg = row['Angle_Obs_Deg']
+            
+            calc_ang_deg = 0.0
+            diff_sec = 0.0
+            
+            if df_coords is not None and all(p in df_coords.index for p in [bs, stn, fs]):
+                n_stn = round(df_coords.loc[stn, 'N_TWD97'], 3)
+                e_stn = round(df_coords.loc[stn, 'E_TWD97'], 3)
+                n_bs = round(df_coords.loc[bs, 'N_TWD97'], 3)
+                e_bs = round(df_coords.loc[bs, 'E_TWD97'], 3)
+                n_fs = round(df_coords.loc[fs, 'N_TWD97'], 3)
+                e_fs = round(df_coords.loc[fs, 'E_TWD97'], 3)
+                
+                az_bs = math.atan2(e_bs - e_stn, n_bs - n_stn)
+                az_fs = math.atan2(e_fs - e_stn, n_fs - n_stn)
+                
+                calc_ang_rad = az_fs - az_bs
+                calc_ang_deg = math.degrees(calc_ang_rad) % 360
+                
+                diff = ang_obs_deg - calc_ang_deg
+                if diff > 180: diff -= 360
+                elif diff < -180: diff += 360
+                diff_sec = diff * 3600
+                
+            pdf.set_x(offset_ang)
+            pdf.cell(w_ang[0], 5, bs, align='C')
+            pdf.cell(w_ang[1], 5, stn, align='C')
+            pdf.cell(w_ang[2], 5, fs, align='C')
+            pdf.cell(w_ang[3], 5, deg_to_dms_str(ang_obs_deg), align='C')
+            pdf.cell(w_ang[4], 5, deg_to_dms_str(calc_ang_deg) if calc_ang_deg != 0 else "-", align='C')
+            pdf.cell(w_ang[5], 5, f"{diff_sec:.1f}" if calc_ang_deg != 0 else "-", align='R')
+            pdf.ln()
+
+    try:
+        return bytes(pdf.output())
+    except TypeError:
+        return pdf.output(dest='S').encode('latin1')
+
 def generate_report_6_1_accuracy(data, limits):
     wb = Workbook(); ws = wb.active; ws.title = "精度檢核總表"
     ws.merge_cells('A1:O1'); ws['A1'] = "e-GNSS 各階段精度檢核報表"; ws['A1'].font = Font(size=16, bold=True); ws['A1'].alignment = Alignment(horizontal='center')
@@ -485,8 +737,9 @@ def generate_report_8_1_nlsc_pdf(twd97_data, gnss_data, check_pts):
     max_dn_p, max_de_p, max_ds_p = "", "", ""
 
     for i, p in enumerate(check_pts):
-        n_orig, e_orig = df_t.loc[p, 'N_TWD97'], df_t.loc[p, 'E_TWD97']
-        n_chk, e_chk = df_g.loc[p, 'N'], df_g.loc[p, 'E']
+        # 🚀 修正：強制 3 位小數運算
+        n_orig, e_orig = round(df_t.loc[p, 'N_TWD97'], 3), round(df_t.loc[p, 'E_TWD97'], 3)
+        n_chk, e_chk = round(df_g.loc[p, 'N'], 3), round(df_g.loc[p, 'E'], 3)
         dn = n_orig - n_chk
         de = e_orig - e_chk
         ds = math.sqrt(dn**2 + de**2)
@@ -516,7 +769,7 @@ def generate_report_8_1_nlsc_pdf(twd97_data, gnss_data, check_pts):
         pdf.ln()
     
     # ==========================
-    # 2. 距離檢核 (強制換頁)
+    # 2. 距離檢核
     # ==========================
     pdf.add_page()
     pdf.set_font('tc', '', 12)
@@ -540,8 +793,15 @@ def generate_report_8_1_nlsc_pdf(twd97_data, gnss_data, check_pts):
     min_ratio_p1, min_ratio_p2 = "", ""
 
     for p1, p2 in itertools.combinations(check_pts, 2):
-        d_orig, _ = calc_dist_azimuth(df_t.loc[p1,'N_TWD97'], df_t.loc[p1,'E_TWD97'], df_t.loc[p2,'N_TWD97'], df_t.loc[p2,'E_TWD97'])
-        d_chk, _ = calc_dist_azimuth(df_g.loc[p1,'N'], df_g.loc[p1,'E'], df_g.loc[p2,'N'], df_g.loc[p2,'E'])
+        # 🚀 修正：強制 3 位小數後才丟入 calc_dist_azimuth 計算
+        n1_orig, e1_orig = round(df_t.loc[p1,'N_TWD97'], 3), round(df_t.loc[p1,'E_TWD97'], 3)
+        n2_orig, e2_orig = round(df_t.loc[p2,'N_TWD97'], 3), round(df_t.loc[p2,'E_TWD97'], 3)
+        d_orig, _ = calc_dist_azimuth(n1_orig, e1_orig, n2_orig, e2_orig)
+        
+        n1_chk, e1_chk = round(df_g.loc[p1,'N'], 3), round(df_g.loc[p1,'E'], 3)
+        n2_chk, e2_chk = round(df_g.loc[p2,'N'], 3), round(df_g.loc[p2,'E'], 3)
+        d_chk, _ = calc_dist_azimuth(n1_chk, e1_chk, n2_chk, e2_chk)
+        
         diff = abs(d_orig - d_chk)
         allow = d_orig / 5000.0
         ratio = int(d_orig / diff) if diff > 0.0001 else float('inf')
@@ -566,15 +826,14 @@ def generate_report_8_1_nlsc_pdf(twd97_data, gnss_data, check_pts):
         pdf.cell(w2[7], 8, note, align='C')
         pdf.ln()
 
-    # 👉 距離檢核表專屬：輸出最低精度總結
-    pdf.ln(5)
     if min_ratio != float('inf') and min_ratio_p1 != "":
+        pdf.ln(5)
         pdf.set_font('tc', '', 10)
         pdf.set_x(offset2)
         pdf.cell(0, 8, f"相對精度最低為 {min_ratio_p1} --> {min_ratio_p2} : 1 / {int(min_ratio)}", ln=True)
 
     # ==========================
-    # 3. 方位角檢核 (強制換頁)
+    # 3. 方位角檢核
     # ==========================
     pdf.add_page()
     pdf.set_font('tc', '', 12)
@@ -596,8 +855,14 @@ def generate_report_8_1_nlsc_pdf(twd97_data, gnss_data, check_pts):
     max_az_dist = 0.0
 
     for p1, p2 in itertools.combinations(check_pts, 2):
-        d_orig, az_orig = calc_dist_azimuth(df_t.loc[p1,'N_TWD97'], df_t.loc[p1,'E_TWD97'], df_t.loc[p2,'N_TWD97'], df_t.loc[p2,'E_TWD97'])
-        _, az_chk = calc_dist_azimuth(df_g.loc[p1,'N'], df_g.loc[p1,'E'], df_g.loc[p2,'N'], df_g.loc[p2,'E'])
+        # 🚀 修正：強制 3 位小數後才丟入 calc_dist_azimuth 計算
+        n1_orig, e1_orig = round(df_t.loc[p1,'N_TWD97'], 3), round(df_t.loc[p1,'E_TWD97'], 3)
+        n2_orig, e2_orig = round(df_t.loc[p2,'N_TWD97'], 3), round(df_t.loc[p2,'E_TWD97'], 3)
+        d_orig, az_orig = calc_dist_azimuth(n1_orig, e1_orig, n2_orig, e2_orig)
+        
+        n1_chk, e1_chk = round(df_g.loc[p1,'N'], 3), round(df_g.loc[p1,'E'], 3)
+        n2_chk, e2_chk = round(df_g.loc[p2,'N'], 3), round(df_g.loc[p2,'E'], 3)
+        _, az_chk = calc_dist_azimuth(n1_chk, e1_chk, n2_chk, e2_chk)
         
         daz_sec = (az_orig - az_chk) * 3600
         if daz_sec > 180*3600: daz_sec -= 360*3600
@@ -618,13 +883,11 @@ def generate_report_8_1_nlsc_pdf(twd97_data, gnss_data, check_pts):
         pdf.cell(w3[5], 8, "", align='C')
         pdf.ln()
 
-    # 👉 方位角檢核表專屬：輸出最大方位角較差與距離總結
-    pdf.ln(5)
     if max_az_diff != -1.0 and max_az_p1 != "":
+        pdf.ln(5)
         pdf.set_x(offset3)
         pdf.cell(0, 8, f"方位角較差最大為 {max_az_p1} --> {max_az_p2} : {max_az_diff:.2f} 秒 ({max_az_dist:.3f} m)", ln=True)
 
-    # 輸出 PDF Bytes
     try:
         pdf_bytes = bytes(pdf.output())
     except TypeError:
@@ -914,7 +1177,13 @@ with col_right:
             else: df_kp = pd.read_excel(kp_file)
             df_kp.columns = df_kp.columns.str.replace('\n', '').str.replace('"', '').str.strip()
             
-            # 加入除錯機制，提示目前抓到的欄位
+            # 💡 新增：統一高程欄位名稱，相容 'H' 或 '高程_H' 或 '高程'
+            if '高程_H' in df_kp.columns: df_kp.rename(columns={'高程_H': 'H'}, inplace=True)
+            elif '高程' in df_kp.columns: df_kp.rename(columns={'高程': 'H'}, inplace=True)
+            if 'H' not in df_kp.columns:
+                df_kp['H'] = 0.0 # 若無高程欄位，預設補 0 避免報錯，但給予提示
+                st.warning("⚠️ 提醒：已知點清冊未包含高程 (H) 欄位，這將影響後續外業距離的海水面化算精度！")
+
             if {'測點名稱','N','E'}.issubset(df_kp.columns):
                 obs_avg = pd.DataFrame(st.session_state.temp_database).groupby('測點名稱')[['N','E']].mean().reset_index().to_dict('records')
                 known_list = df_kp[['測點名稱','N','E']].to_dict('records')
@@ -958,19 +1227,44 @@ with col_right:
                                 st.session_state.trans_params = p_new
                                 st.session_state.trans_vv = vv_new
                                 st.success(f"優化完成！採用點數: {n_new}, 新 RMSE: {rmse_new:.4f}m"); st.rerun()
-                        
                         if c_opt2.button("🌍 執行全區強制附合", type="primary", use_container_width=True):
                             st.session_state.trans_residuals = edited_res
                             p = st.session_state.trans_params
                             obs_all = pd.DataFrame(st.session_state.temp_database).groupby('測點名稱')[['N','E','H']].mean().reset_index()
                             res_final = []
                             selected_df = edited_res[edited_res['採用']==True]
+                            
+                            # 🚀 新增：建立已知點快取字典，確保坐標 100% 鎖死
+                            known_dict = selected_df.set_index('測點名稱')[['N_已知(Ground)', 'E_已知(Ground)']].to_dict('index')
+
                             for _, r in obs_all.iterrows():
-                                na = p[0]*r['N'] + p[1]*r['E'] + p[2]; ea = p[3]*r['N'] + p[4]*r['E'] + p[5]
-                                dn, de = calculate_residual_correction(na, ea, selected_df)
-                                res_final.append({'測點名稱': r['測點名稱'], 'N_TWD97': na+dn, 'E_TWD97': ea+de, 'H': r['H']})
+                                pt_name = r['測點名稱']
+                                
+                                # 判斷是否為「打勾採用」的已知控制點
+                                if pt_name in known_dict:
+                                    # 鎖死：直接套用已知點原本的坐標，不經過任何轉換與浮點數運算
+                                    res_final.append({
+                                        '測點名稱': pt_name, 
+                                        'N_TWD97': known_dict[pt_name]['N_已知(Ground)'], 
+                                        'E_TWD97': known_dict[pt_name]['E_已知(Ground)'], 
+                                        'H': r['H']
+                                    })
+                                else:
+                                    # 未知點：進行六參數轉換與殘差分配
+                                    na = p[0]*r['N'] + p[1]*r['E'] + p[2]
+                                    ea = p[3]*r['N'] + p[4]*r['E'] + p[5]
+                                    dn, de = calculate_residual_correction(na, ea, selected_df)
+                                    
+                                    # 🚀 修正：殘差定義為 (轉換後 - 已知)，因此要「減去」殘差才能將點位拉回正確位置
+                                    res_final.append({
+                                        '測點名稱': pt_name, 
+                                        'N_TWD97': na - dn, 
+                                        'E_TWD97': ea - de, 
+                                        'H': r['H']
+                                    })
+                                    
                             st.session_state.final_twd97_data = res_final
-                            st.success("✅ 全區轉換完成 (已依據採用點位執行殘差分配)")
+                            st.success("✅ 全區轉換完成 (控制點已完全鎖死，未知點已依殘差正確收斂)")
                             
                         if st.session_state.final_twd97_data:
                             st.markdown("#### 📤 第七區：轉換與優化報表下載")
@@ -1034,9 +1328,16 @@ with col_right:
             
             all_pts = [r['測點名稱'] for r in st.session_state.final_twd97_data]
             df_twd97_all = pd.DataFrame(st.session_state.final_twd97_data).set_index('測點名稱')
+
             all_baselines = []
             for p1, p2 in itertools.combinations(all_pts, 2):
-                d_t, _ = calc_dist_azimuth(df_twd97_all.loc[p1,'N_TWD97'], df_twd97_all.loc[p1,'E_TWD97'], df_twd97_all.loc[p2,'N_TWD97'], df_twd97_all.loc[p2,'E_TWD97'])
+                # 🚀 修正：強制 3 位小數後再計算全組合基線
+                n1 = round(df_twd97_all.loc[p1,'N_TWD97'], 3)
+                e1 = round(df_twd97_all.loc[p1,'E_TWD97'], 3)
+                n2 = round(df_twd97_all.loc[p2,'N_TWD97'], 3)
+                e2 = round(df_twd97_all.loc[p2,'E_TWD97'], 3)
+                
+                d_t, _ = calc_dist_azimuth(n1, e1, n2, e2)
                 all_baselines.append({'From': p1, 'To': p2, 'Dist_TWD97': d_t})
             
             df_all_base = pd.DataFrame(all_baselines)
@@ -1084,3 +1385,38 @@ with col_right:
                     except Exception as e: st.error(f"讀取錯誤: {e}")
             else:
                 st.success("✅ 全區無小於門檻之短邊，無需辦理強制實地檢測。")
+
+# ================= 9. 第九區：地面測量 OBS 整合比較 =================
+    if st.session_state.final_twd97_data:
+        st.markdown("---")
+        st.header("📐 第九區：地面測量 OBS 整合比較")
+        st.info("上傳全站儀觀測檔 (OBS) 進行「衛星定位與地面觀測成果比較表」產製。")
+        
+        c9_1, c9_2 = st.columns([1, 1])
+        with c9_1:
+            obs_project_name = st.text_input("報表計畫名稱", value="115年度地籍圖重測專案")
+        with c9_2:
+            obs_file = st.file_uploader("📂 上傳 外業 OBS 觀測檔", type=['txt', 'obs'])
+            
+        if obs_file:
+            dist_data, angle_data = parse_obs_file(obs_file)
+            st.success(f"讀取成功！共解析到 {len(dist_data)} 筆距離觀測、{len(angle_data)} 筆角度觀測。")
+            
+            if st.button("📄 產製 衛星與地面成果比較表 (PDF)", type="primary", use_container_width=True):
+                pts_file_name = kp_file.name if kp_file else "系統暫存控制點"
+                pdf_cmp_bytes = generate_obs_comparison_pdf(
+                    dist_data, 
+                    angle_data, 
+                    st.session_state.final_twd97_data, 
+                    obs_project_name, 
+                    obs_file.name, 
+                    pts_file_name
+                )
+                
+                st.download_button(
+                    label="📥 下載 衛星與地面成果比較表.pdf",
+                    data=pdf_cmp_bytes,
+                    file_name="衛星與地面成果比較表.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
