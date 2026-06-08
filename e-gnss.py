@@ -1411,7 +1411,14 @@ with col_right:
             
             if st.button("📄 產製 衛星與地面成果比較表 (PDF)", type="primary", use_container_width=True):
                 with st.spinner("⏳ 正在產製比較表..."):
-                    pts_file_name = kp_file.name if kp_file else "系統暫存控制點"
+
+                    if kp_file:
+                        # 取得主檔名並加上 .CTL
+                        base_name = kp_file.name.rsplit('.', 1)[0]
+                        pts_file_name = f"{base_name}.CTL"
+                    else:
+                        pts_file_name = "系統暫存控制點"
+                    
                     # 將 PDF 存入記憶體
                     st.session_state.pdf_cmp_bytes = generate_obs_comparison_pdf(
                         st.session_state.dist_data, 
